@@ -8,14 +8,14 @@
 
 ## Executive Summary
 
-This report covers a comprehensive security review of the AutoGPT codebase, covering hardcoded secrets, injection vulnerabilities, authentication/authorization gaps, cryptographic weaknesses, CORS misconfigurations, Docker security, and dependency concerns. A total of **15 findings** were identified across **Critical**, **High**, **Medium**, and **Low** severity levels.
+This report covers a comprehensive security review of the AutoGPT codebase, covering hardcoded secrets, injection vulnerabilities, authentication/authorization gaps, cryptographic weaknesses, CORS misconfigurations, Docker security, and dependency concerns. A total of **19 findings** were identified across **Critical**, **High**, **Medium**, and **Low** severity levels.
 
 | Severity | Count |
 |----------|-------|
 | Critical | 3     |
-| High     | 4     |
-| Medium   | 5     |
-| Low      | 3     |
+| High     | 6     |
+| Medium   | 6     |
+| Low      | 4     |
 
 ---
 
@@ -196,9 +196,47 @@ The Forge Dockerfile also has:
 
 ---
 
+### 8. SSRF via User-Controlled Plugin URLs
+
+**Severity:** HIGH
+**File:** `autogpts/autogpt/autogpt/plugins/__init__.py:77`
+
+**Description:** The plugin loader fetches URLs from `config.plugins_openai` without validating the target:
+
+```python
+response = requests.get(f"{url}/.well-known/ai-plugin.json")
+```
+
+An attacker who can influence the plugin configuration could specify URLs pointing to:
+- Internal services (`http://localhost:*`)
+- Cloud metadata endpoints (`http://169.254.169.254/`)
+- Private network resources (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`)
+
+**Recommendation:** Implement URL validation that blocks private IP ranges, loopback addresses, link-local addresses, and cloud metadata endpoints before making requests.
+
+---
+
+### 9. `os.system()` Usage with String Interpolation
+
+**Severity:** HIGH
+**Files:**
+- `cli.py:13-14` — `os.system("pip3 install click")`, `os.system("pip3 install PyGithub")`
+- `autogpts/autogpt/scripts/check_requirements.py:9` — `os.system(f"{sys.executable} -m pip install ...")`
+- `autogpts/forge/forge/sdk/workspace_test.py:21` — `os.system(f"rm -rf {TEST_BASE_PATH}")`
+
+**Description:** Multiple files use `os.system()` which invokes a shell and is vulnerable to command injection. While the current arguments are hardcoded or from trusted sources, the pattern is inherently unsafe and could become exploitable if any variable becomes user-influenced.
+
+**Recommendation:** Replace all `os.system()` calls with `subprocess.run()` using list arguments:
+```python
+# Instead of: os.system(f"rm -rf {path}")
+subprocess.run(["rm", "-rf", str(path)], check=True)
+```
+
+---
+
 ## Medium Findings
 
-### 8. Hardcoded Test Credentials in Docker Compose
+### 10. Hardcoded Test Credentials in Docker Compose
 
 **Severity:** MEDIUM
 **File:** `autogpts/autogpt/docker-compose.yml:27-28, 40-41`
@@ -218,7 +256,7 @@ While labeled for testing, if this compose file is used in any non-test context,
 
 ---
 
-### 9. Missing Security Headers
+### 11. Missing Security Headers
 
 **Severity:** MEDIUM
 **Files:**
@@ -245,7 +283,7 @@ async def add_security_headers(request, call_next):
 
 ---
 
-### 10. YAML Loading with FullLoader
+### 12. YAML Loading with FullLoader
 
 **Severity:** MEDIUM
 **Files:**
@@ -270,7 +308,28 @@ data = yaml.load(file, Loader=yaml.SafeLoader)
 
 ---
 
-### 11. Poetry Installer Pipe to Python (Supply Chain Risk)
+### 13. XXE Risk in XML Parsing
+
+**Severity:** MEDIUM
+**File:** `autogpts/autogpt/autogpt/commands/file_operations_utils.py:63`
+
+**Description:** The `XMLParser` class uses BeautifulSoup with the `"xml"` parser (backed by `lxml`), which may be vulnerable to XML External Entity (XXE) attacks when parsing untrusted XML files:
+
+```python
+class XMLParser(ParserStrategy):
+    def read(self, file: BinaryIO) -> str:
+        soup = BeautifulSoup(file, "xml")
+        text = soup.get_text()
+        return text
+```
+
+Since the agent can process arbitrary files from the workspace or downloaded from the web, malicious XML with DOCTYPE declarations could exfiltrate data or cause denial of service.
+
+**Recommendation:** Use the `defusedxml` library or explicitly disable entity processing in lxml.
+
+---
+
+### 14. Poetry Installer Pipe to Python (Supply Chain Risk)
 
 **Severity:** MEDIUM
 **File:** `autogpts/autogpt/Dockerfile:27`
@@ -286,7 +345,7 @@ This is a supply chain risk — if `install.python-poetry.org` is compromised, a
 
 ---
 
-### 12. Sensitive Data in Logging
+### 15. Sensitive Data in Logging
 
 **Severity:** MEDIUM
 **Files:**
@@ -305,7 +364,7 @@ logger.info(f"Executing command '{command_line}' in working directory '{os.getcw
 
 ## Low Findings
 
-### 13. Build Artifacts Committed to Repository
+### 16. Build Artifacts Committed to Repository
 
 **Severity:** LOW
 **File:** `frontend/build/web/` (entire directory)
@@ -316,7 +375,25 @@ logger.info(f"Executing command '{command_line}' in working directory '{os.getcw
 
 ---
 
-### 14. Forge `.env.example` Contains Realistic-Looking Key
+### 17. Unsafe Pickle Deserialization in Benchmark Reports
+
+**Severity:** LOW
+**File:** `benchmark/reports/match_records.py:270-276, 326-329`
+
+**Description:** Pandas pickle is used for data serialization/deserialization:
+```python
+reports_df = pd.read_pickle("raw_reports.pkl")
+helicone_df = pd.read_pickle("raw_helicone.pkl")
+df.to_pickle("df.pkl")
+```
+
+`pd.read_pickle()` can execute arbitrary code if pickle files are from untrusted sources.
+
+**Recommendation:** Use safer formats like Parquet or CSV for data exchange.
+
+---
+
+### 18. Forge `.env.example` Contains Realistic-Looking Key
 
 **Severity:** LOW
 **File:** `autogpts/forge/.env.example`
@@ -327,7 +404,7 @@ logger.info(f"Executing command '{command_line}' in working directory '{os.getcw
 
 ---
 
-### 15. No Rate Limiting on API Endpoints
+### 19. No Rate Limiting on API Endpoints
 
 **Severity:** LOW
 **Files:**
@@ -340,20 +417,35 @@ logger.info(f"Executing command '{command_line}' in working directory '{os.getcw
 
 ---
 
+## Positive Findings
+
+The following areas were reviewed and found to be properly secured:
+
+- **Path Traversal:** Properly mitigated via `sanitize_path_arg` decorator in `autogpts/autogpt/autogpt/commands/decorators.py` — paths are resolved relative to workspace root with boundary validation
+- **SQL Injection:** SQLAlchemy ORM with parameterized queries used consistently in `autogpts/forge/forge/db.py`
+- **XSS/Template Injection:** No unsafe template rendering found; frontend uses safe rendering patterns
+- **eval()/exec():** Only `ast.literal_eval()` found (safe — only evaluates Python literals)
+
+---
+
 ## Summary of Recommendations (Priority Order)
 
 | Priority | Action | Findings |
 |----------|--------|----------|
-| 1 | Implement authentication/authorization on all API endpoints | #2, #15 |
+| 1 | Implement authentication/authorization on all API endpoints | #2, #19 |
 | 2 | Default `shell=False` for command execution; enforce allowlist | #1 |
-| 3 | Rotate and externalize Firebase credentials | #3 |
-| 4 | Replace `random` with `secrets` for password generation | #4 |
-| 5 | Replace MD5 with SHA-256 for checksums | #5 |
-| 6 | Add non-root USER to Dockerfiles | #7 |
-| 7 | Restrict CORS methods/headers | #6 |
-| 8 | Use `yaml.SafeLoader` for YAML parsing | #10 |
-| 9 | Add security headers middleware | #9 |
-| 10 | Externalize test credentials | #8 |
-| 11 | Fix Poetry install supply chain risk | #11 |
-| 12 | Sanitize logging output | #12 |
-| 13 | Remove build artifacts from repo | #13 |
+| 3 | Replace `os.system()` with `subprocess.run()` using list args | #9 |
+| 4 | Add SSRF protections to plugin URL fetching | #8 |
+| 5 | Rotate and externalize Firebase credentials | #3 |
+| 6 | Replace `random` with `secrets` for password generation | #4 |
+| 7 | Replace MD5 with SHA-256 for checksums | #5 |
+| 8 | Add non-root USER to Dockerfiles | #7 |
+| 9 | Restrict CORS methods/headers | #6 |
+| 10 | Use `yaml.SafeLoader` for YAML parsing | #12 |
+| 11 | Use `defusedxml` for XML parsing | #13 |
+| 12 | Add security headers middleware | #11 |
+| 13 | Externalize test credentials | #10 |
+| 14 | Fix Poetry install supply chain risk | #14 |
+| 15 | Sanitize logging output | #15 |
+| 16 | Remove build artifacts from repo | #16 |
+| 17 | Migrate from pickle to safer formats | #17 |
