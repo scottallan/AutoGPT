@@ -8,14 +8,14 @@
 
 ## Executive Summary
 
-This report covers a comprehensive security review of the AutoGPT codebase, covering hardcoded secrets, injection vulnerabilities, authentication/authorization gaps, cryptographic weaknesses, CORS misconfigurations, Docker security, and dependency concerns. A total of **19 findings** were identified across **Critical**, **High**, **Medium**, and **Low** severity levels.
+This report covers a comprehensive security review of the AutoGPT codebase, covering hardcoded secrets, injection vulnerabilities, authentication/authorization gaps, cryptographic weaknesses, CORS misconfigurations, Docker security, and dependency concerns. A total of **23 findings** were identified across **Critical**, **High**, **Medium**, and **Low** severity levels.
 
 | Severity | Count |
 |----------|-------|
 | Critical | 3     |
-| High     | 6     |
-| Medium   | 6     |
-| Low      | 4     |
+| High     | 7     |
+| Medium   | 8     |
+| Low      | 5     |
 
 ---
 
@@ -417,6 +417,82 @@ df.to_pickle("df.pkl")
 
 ---
 
+### 20. Wildcard (`"*"`) Dependency Versions (30+ Packages)
+
+**Severity:** HIGH
+**File:** `autogpts/autogpt/pyproject.toml`
+
+**Description:** Over 30 dependencies use wildcard `"*"` version specifiers, including security-critical packages:
+
+```toml
+click = "*"
+docker = "*"
+requests = "*"
+redis = "*"
+Pillow = "*"
+pydantic = "*"
+numpy = "*"
+jsonschema = "*"
+```
+
+All dev dependencies (`black`, `flake8`, `pytest`, `mypy`, etc.) also use `"*"`. This allows installation of any version, including ones with known CVEs, breaking changes, or supply chain compromises.
+
+**Recommendation:** Pin all dependencies to specific tested versions or use bounded ranges (e.g., `requests = "^2.31.0"`).
+
+---
+
+### 21. Outdated OpenAI SDK in Core Package
+
+**Severity:** MEDIUM
+**File:** `autogpts/autogpt/core/pyproject.toml:29`
+
+**Description:** The core package pins an extremely outdated OpenAI SDK version:
+
+```toml
+openai = "^0.28.0"
+```
+
+The current OpenAI SDK is `^1.0+` with a completely different API surface. The `0.28.x` line may contain unpatched security issues and is no longer maintained.
+
+**Recommendation:** Update to `openai = "^1.7.2"` or later (matching the main package).
+
+---
+
+### 22. Minimal Shell Command Denylist
+
+**Severity:** MEDIUM
+**File:** `autogpts/autogpt/autogpt/config/config.py:140-159`
+
+**Description:** The default shell command denylist only blocks `sudo` and `su`:
+
+```python
+shell_denylist: list[str] = UserConfigurable(
+    default_factory=lambda: ["sudo", "su"],
+)
+```
+
+This allows dangerous commands like `rm -rf /`, `chmod 000 /`, `curl | sh`, `wget`, network tools, package installation, and privilege escalation via other means.
+
+**Recommendation:** Expand the denylist to include destructive and network-facing commands, or switch to an allowlist-only approach by default.
+
+---
+
+### 23. Incomplete `.gitignore` Patterns
+
+**Severity:** LOW
+**File:** `.gitignore` (root and subdirectories)
+
+**Description:** The `.gitignore` files are missing patterns for common secret file types:
+- `*.pem`, `*.key` (private keys)
+- `*.p12`, `*.pfx` (certificates)
+- `.env.local`, `.env.production` (environment variants)
+- `.aws/*`, `.gcloud/*` (cloud credentials)
+- `*.db` in Forge `.gitignore` (only `*.sqlite` is ignored)
+
+**Recommendation:** Add comprehensive secret-file patterns to `.gitignore` to prevent accidental commits.
+
+---
+
 ## Positive Findings
 
 The following areas were reviewed and found to be properly secured:
@@ -433,19 +509,22 @@ The following areas were reviewed and found to be properly secured:
 | Priority | Action | Findings |
 |----------|--------|----------|
 | 1 | Implement authentication/authorization on all API endpoints | #2, #19 |
-| 2 | Default `shell=False` for command execution; enforce allowlist | #1 |
-| 3 | Replace `os.system()` with `subprocess.run()` using list args | #9 |
-| 4 | Add SSRF protections to plugin URL fetching | #8 |
-| 5 | Rotate and externalize Firebase credentials | #3 |
-| 6 | Replace `random` with `secrets` for password generation | #4 |
-| 7 | Replace MD5 with SHA-256 for checksums | #5 |
-| 8 | Add non-root USER to Dockerfiles | #7 |
-| 9 | Restrict CORS methods/headers | #6 |
-| 10 | Use `yaml.SafeLoader` for YAML parsing | #12 |
-| 11 | Use `defusedxml` for XML parsing | #13 |
-| 12 | Add security headers middleware | #11 |
-| 13 | Externalize test credentials | #10 |
-| 14 | Fix Poetry install supply chain risk | #14 |
-| 15 | Sanitize logging output | #15 |
-| 16 | Remove build artifacts from repo | #16 |
-| 17 | Migrate from pickle to safer formats | #17 |
+| 2 | Default `shell=False` for command execution; enforce allowlist | #1, #22 |
+| 3 | Pin all wildcard dependencies to specific versions | #20 |
+| 4 | Replace `os.system()` with `subprocess.run()` using list args | #9 |
+| 5 | Add SSRF protections to plugin URL fetching | #8 |
+| 6 | Rotate and externalize Firebase credentials | #3 |
+| 7 | Update outdated OpenAI SDK in core package | #21 |
+| 8 | Replace `random` with `secrets` for password generation | #4 |
+| 9 | Replace MD5 with SHA-256 for checksums | #5 |
+| 10 | Add non-root USER to Dockerfiles | #7 |
+| 11 | Restrict CORS methods/headers | #6 |
+| 12 | Use `yaml.SafeLoader` for YAML parsing | #12 |
+| 13 | Use `defusedxml` for XML parsing | #13 |
+| 14 | Add security headers middleware | #11 |
+| 15 | Externalize test credentials | #10 |
+| 16 | Fix Poetry install supply chain risk | #14 |
+| 17 | Sanitize logging output | #15 |
+| 18 | Remove build artifacts from repo | #16 |
+| 19 | Migrate from pickle to safer formats | #17 |
+| 20 | Expand `.gitignore` with secret-file patterns | #23 |
